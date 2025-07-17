@@ -1,3 +1,3 @@
-module github.com/santosjordi/fc_challenge_apachebenchmark_clone
+module github.com/Santosjordi/fc_challenge_api_benchmark
 
 go 1.23.2
