@@ -8,62 +8,92 @@ import (
 	"time"
 )
 
+// StatusReport carries info about one HTTP request
+type StatusReport struct {
+	Duration   time.Duration
+	HTTPStatus int
+}
+
 func main() {
+	// --- CLI flags ---
 	var totalRequests int
 	var concurrency int
 	var url string
 
-	flag.IntVar(&totalRequests, "n", 100, "Total number of request")
-	flag.IntVar(&concurrency, "c", 10, "Number of concurrent Requests")
-	flag.StringVar(&url, "url", "", "Target url")
+	flag.IntVar(&totalRequests, "requests", 100, "Number of requests")
+	flag.IntVar(&concurrency, "concurrency", 10, "Concurrency level")
+	flag.StringVar(&url, "url", "", "Target URL")
 	flag.Parse()
 
 	if url == "" {
-		fmt.Println("Please provide a URL with -url")
+		fmt.Println("Missing -url parameter")
 		return
 	}
 
-	var wg sync.WaitGroup
+	// --- Channels for coordination ---
 	requests := make(chan int, totalRequests)
-	results := make(chan time.Duration, totalRequests)
+	results := make(chan StatusReport, totalRequests)
 
-	start := time.Now()
+	var wg sync.WaitGroup
 
-	// Lauch goroutines
+	// --- Workers ---
 	for i := 0; i < concurrency; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			client := http.Client{}
+			client := &http.Client{}
 
 			for range requests {
-				t0 := time.Now()
+				start := time.Now()
 				resp, err := client.Get(url)
+				duration := time.Since(start)
+
+				report := StatusReport{Duration: duration, HTTPStatus: 0}
+
 				if err == nil {
+					report.HTTPStatus = resp.StatusCode
 					resp.Body.Close()
 				}
-				results <- time.Since(t0)
+
+				results <- report
 			}
 		}()
 	}
 
-	// sends "n" requests
+	// --- Feed jobs ---
 	for i := 0; i < totalRequests; i++ {
 		requests <- i
 	}
 	close(requests)
 
-	wg.Wait()
-	close(requests)
+	// --- Close results after all workers finish ---
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
 
-	totalDuration := time.Since(start)
+	// --- Collect stats ---
+	var total time.Duration
+	var count int
+	statusCounts := make(map[int]int)
 
-	var sum time.Duration
-	for r := range results {
-		sum += r
+	startWall := time.Now()
+	for report := range results {
+		total += report.Duration
+		count++
+		statusCounts[report.HTTPStatus]++
 	}
+	wallDuration := time.Since(startWall)
 
-	fmt.Printf("Total Time: %v\n", totalDuration)
-	fmt.Printf("Average Request Time: %v\n", sum/time.Duration(totalRequests))
-	fmt.Printf("Requests/sec: %.2f\n", float64(totalRequests)/totalDuration.Seconds())
+	// --- Report ---
+	fmt.Printf("\nLoad test complete for %s\n", url)
+	fmt.Printf("Total requests: %d\n", count)
+	fmt.Printf("Total wall time: %v\n", wallDuration)
+	fmt.Printf("Average time per request: %v\n", total/time.Duration(count))
+	fmt.Printf("Requests/sec: %.2f\n", float64(count)/wallDuration.Seconds())
+
+	fmt.Println("Status code distribution:")
+	for code, qty := range statusCounts {
+		fmt.Printf("  %d: %d\n", code, qty)
+	}
 }
